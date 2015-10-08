@@ -17,7 +17,11 @@ class IndexAttributesAndCompoundKeySpec extends GormDatastoreSpec{
             ServerStream.count() == 0
             ServerStream.collection.indexInfo[1].key == [server:1, stream:1]
             ServerStream.collection.indexInfo[1].unique
-            ServerStream.collection.indexInfo[1].dropDups
+            /*
+             * Commenting here as it is already fixed in commits of higher version.
+             * https://github.com/grails/grails-data-mapping/commit/5f9d3c59cd8f239cff6b8fd892c0feea2a3621f4#diff-07fd5c0f57b567949b54891341ebdb79L21
+             */
+            //ServerStream.collection.indexInfo[1].dropDups
 
     }
     @Override

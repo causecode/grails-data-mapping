@@ -87,8 +87,10 @@ public class MongoQuery extends Query implements QueryArgumentsAware {
 
     private static final String MONGO_THIS_PREFIX = "this.";
     public static final String HINT_ARGUMENT = "hint";
+    public static final String BATCH_SIZE_ARGUMENT = "batchSize";
 
     private Map queryArguments = Collections.emptyMap();
+    private boolean supportBulkOperation = false;
 
     public static final String NEAR_OPERATOR = "$near";
 
@@ -855,11 +857,12 @@ public class MongoQuery extends Query implements QueryArgumentsAware {
                 DBCursor cursor;
                 DBObject query = createQueryObject(entity);
 
-
                 final List<Projection> projectionList = projections().getProjectionList();
                 if (projectionList.isEmpty()) {
                     cursor = executeQuery(entity, criteria, collection, query);
-                    return (List)new MongoResultList(cursor,offset, mongoEntityPersister).clone();
+                    Object resultList = new MongoResultList(cursor,offset, mongoEntityPersister).clone();
+                    ((MongoResultList)resultList).setSupportBulkOperation(supportBulkOperation);
+                    return (List)resultList;
                 }
 
                 populateMongoQuery((MongoSession) session, query, criteria, entity);
@@ -1003,6 +1006,20 @@ public class MongoQuery extends Query implements QueryArgumentsAware {
                         else if (hint != null) {
                             cursor.hint(hint.toString());
                         }
+                    }
+                    /*
+                     * Allow to change the default batch size of underlying MongoDB cursor. For example:
+                     *
+                     * <pre>
+                     *     User.withCriteria {
+                     *         eq("enabled", true)
+                     *         arguments([batchSize: 2000])
+                     *     }
+                     * </pre>
+                     */
+                    if (queryArguments.containsKey(BATCH_SIZE_ARGUMENT)) {
+                        int batchSize = (Integer)queryArguments.get(BATCH_SIZE_ARGUMENT);
+                        cursor.batchSize(batchSize);
                     }
                 }
                 return cursor;
@@ -1362,6 +1379,17 @@ public class MongoQuery extends Query implements QueryArgumentsAware {
      */
     public void setArguments(Map arguments) {
         this.queryArguments = arguments;
+    }
+
+    /**
+     * Enable support for bulk read operation to prevent memory full issues.
+     *
+     * @author Shashank Agrawal
+     * @since 3.1.6
+     * @since 4.0.7
+     */
+    public void enableSupportForBulkOperation() {
+        this.supportBulkOperation = true;
     }
 
     /**
@@ -1781,6 +1809,7 @@ public class MongoQuery extends Query implements QueryArgumentsAware {
         private List initializedObjects = new ArrayList();
         private Integer size;
         private boolean initialized = false;
+        private boolean supportBulkOperation = false;
 
         @SuppressWarnings("unchecked")
         public MongoResultList(Cursor cursor, int offset, MongoEntityPersister mongoEntityPersister) {
@@ -1817,6 +1846,7 @@ public class MongoQuery extends Query implements QueryArgumentsAware {
                 return initializedObjects.get(index);
             }
             else if(!initialized) {
+                verifySupportForBulkOperation();
                 while(cursor.hasNext()) {
                     if(internalIndex > index) throw new ArrayIndexOutOfBoundsException("Cannot retrieve element at index " + index + " for cursor size " + size());
                     Object o = convertDBObject(cursor.next());
@@ -1853,8 +1883,21 @@ public class MongoQuery extends Query implements QueryArgumentsAware {
             return initializedObjects.listIterator(index);
         }
 
+        public void setSupportBulkOperation(boolean support) {
+            this.supportBulkOperation = support;
+        }
+
+        private void verifySupportForBulkOperation() {
+            if (this.supportBulkOperation) {
+                throw new UnsupportedOperationException("This operation is not supported as bulk operation support is" +
+                        " enabled.");
+            }
+        }
+
         private void initializeFully() {
             if(initialized) return;
+
+            verifySupportForBulkOperation();
 
             while(cursor.hasNext()) {
                 DBObject dbo = cursor.next();
@@ -1901,7 +1944,12 @@ public class MongoQuery extends Query implements QueryArgumentsAware {
                 public Object next() {
                     DBObject dbo = cursor.next();
                     current = convertDBObject(dbo);
-                    if(index < initializedObjects.size())
+                    // Do not store the converted instance if support for bulk read operation is enabled
+                    if (supportBulkOperation) {
+                        return current;
+                    }
+
+                    if (index < initializedObjects.size())
                         initializedObjects.set(index++, current);
                     else {
                         index++;
@@ -1911,6 +1959,7 @@ public class MongoQuery extends Query implements QueryArgumentsAware {
                 }
 
                 public void remove() {
+                    verifySupportForBulkOperation();
                     initializedObjects.remove(current);
                 }
             };
@@ -1926,6 +1975,7 @@ public class MongoQuery extends Query implements QueryArgumentsAware {
                     this.size = ((DBCursor)cursor).size();
                 }
                 else {
+                    verifySupportForBulkOperation();
 
                     this.size = 0;
                     while(cursor.hasNext()) {
@@ -1948,7 +1998,10 @@ public class MongoQuery extends Query implements QueryArgumentsAware {
             if (instance == null) {
                 instance = mongoEntityPersister.createObjectFromNativeEntry(
                     mongoEntityPersister.getPersistentEntity(), (Serializable) id, dbObject);
-                session.cacheInstance(type, (Serializable) id, instance);
+                // Do not cache the instance if bulk read operation support is enabled, to avoid the memory issues
+                if (!supportBulkOperation) {
+                    session.cacheInstance(type, (Serializable) id, instance);
+                }
             }
             return instance;
         }

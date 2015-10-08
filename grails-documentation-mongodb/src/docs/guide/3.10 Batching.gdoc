@@ -1,0 +1,70 @@
+GORM for MongoDB internally uses the underlying MongoDB Cursor which supports the notion of
+[batches|http://docs.mongodb.org/manual/core/cursors/#cursor-batches]. So the GORM allows some feature around it:
+
+h4. Batch Size
+
+According to the MongoDB cursor batch
+
+{note}
+The MongoDB server returns the query results in batches. Batch size will not exceed the maximum BSON document size.
+For most queries, the first batch returns 101 documents or just enough documents to exceed 1 megabyte. Subsequent
+batch size is 4 megabytes.
+{note}
+
+Consider a case where you have 50,000 records in a @User@ domain and you want to iterate over all users to send them
+an customized email. For example:
+
+{code}
+import com.user.User
+
+List<User> userInstanceList = User.withCriteria {
+    eq("enabled", true)
+}
+
+userInstanceList.each { userInstance ->
+     // send email to userInstance
+}
+{code}
+
+The above code might fetch the 100 records in each batch that means to iterate over these 50,000 records, your
+database will be hit 500 times which may be a database performance problem. So to avoid this, you can customize the
+batch size of underlying MongoDB cursor:
+
+{code}
+import com.user.User
+
+List<User> userInstanceList = User.withCriteria {
+    eq("enabled", true)
+    arguments([batchSize: 2000])
+}
+{code}
+
+h4. Batch Read Operation Support
+
+In the above described example, your server may end up in out of Memory error if your collection record size
+increases (based on the configured JVM_OPTS and RAM size). Because for every record you iterate will get cached in the
+underlying session and also in an internal @List@. This will start filling up the memory and will eventually blows up
+the RAM.
+
+To prevent this, modify your criteria to include another statement @supportBulkOperation()@
+
+{code}
+import com.user.User
+
+List<User> userInstanceList = User.withCriteria {
+    eq("enabled", true)
+    supportBulkOperation()
+}
+
+userInstanceList.each { userInstance ->
+     // send email to userInstance
+}
+{code}
+
+This criteria will now prevent GORM to cache any instance of the @User@ domain class. So the domain instance will be
+immediately eligible for GC after the end of the loop and this will allow to iterate over any large number of records
+without worrying about the memory.
+
+This feature will also prevent some of the method which can be called over @userInstanceList@ like @toString()@,
+@size()@, @userInstanceList\[100\]@ etc. and will throw @UnsupportedOperationException@ so that you can only use the
+Groovy's @each@ method on the @userInstanceList@.
